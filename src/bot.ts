@@ -2,6 +2,7 @@ import { Bot, Context, session, type SessionFlavor } from "grammy";
 import { createClient } from "@supabase/supabase-js";
 import * as dotenv from "dotenv";
 import { addDays, setHours, setMinutes } from "date-fns";
+import http from "http"; // Добавлено для Render
 import type { SessionData } from "./types.js";
 import { initScheduler } from "./scheduler.js";
 
@@ -41,14 +42,12 @@ bot.command("newpost", async (ctx) => {
 
 bot.command("newglobaldescription", async (ctx) => {
   ctx.session.step = "waiting_description";
-  await ctx.reply(
-    "✍️ Пришли стандартный текст, который будет под всеми постами:",
-  );
+  await ctx.reply("✍️ Пришли стандартный текст под всеми постами:");
 });
 
 bot.command("newgloballink", async (ctx) => {
   ctx.session.step = "waiting_link";
-  await ctx.reply("🔗 Пришли стандартную ссылку для кнопок/текста:");
+  await ctx.reply("🔗 Пришли стандартную ссылку:");
 });
 
 // --- 2. ОБРАБОТКА МЕДИА ---
@@ -92,52 +91,39 @@ bot.on("message:text", async (ctx) => {
   const step = ctx.session.step;
   const text = ctx.message.text;
 
-  // Обновление стандартного описания
   if (step === "waiting_description") {
     const { error } = await supabase
       .from("global_settings")
       .update({ description: text })
       .eq("id", 1);
-
-    if (error)
-      return ctx.reply("🚨 Ошибка при обновлении текста: " + error.message);
-
+    if (error) return ctx.reply("🚨 Ошибка БД: " + error.message);
     ctx.session.step = "idle";
-    return ctx.reply("✅ Стандартный текст успешно сохранен!");
+    return ctx.reply("✅ Текст сохранен!");
   }
 
-  // Обновление стандартной ссылки
   if (step === "waiting_link") {
     const { error } = await supabase
       .from("global_settings")
       .update({ link: text })
       .eq("id", 1);
-
-    if (error) {
-      console.error("Link update error:", error.message);
-      return ctx.reply("🚨 Ошибка БД при сохранении ссылки.");
-    }
-
+    if (error) return ctx.reply("🚨 Ошибка БД.");
     ctx.session.step = "idle";
-    return ctx.reply("✅ Глобальная ссылка успешно сохранена!");
+    return ctx.reply("✅ Ссылка сохранена!");
   }
 
-  // Подпись для конкретного поста
   if (step === "waiting_post_desc") {
     if (ctx.session.tempPost) {
       ctx.session.tempPost.custom_desc = text === "-" ? undefined : text;
     }
     ctx.session.step = "waiting_post_time";
-    return ctx.reply("⏰ Когда выложить? (Напр: \`15:00\` или \`+1 10:30\`)", {
+    return ctx.reply("⏰ Когда выложить? (Напр: \`15:00\`)", {
       parse_mode: "Markdown",
     });
   }
 
-  // Время публикации
   if (step === "waiting_post_time") {
     const match = text.match(/(?:\+(\d+)\s+)?(\d{1,2}):(\d{2})/);
-    if (!match)
-      return ctx.reply("⚠️ Неверный формат времени! Попробуй еще раз.");
+    if (!match) return ctx.reply("⚠️ Неверный формат времени.");
 
     let targetDate = new Date();
     const daysStr = match[1];
@@ -149,38 +135,34 @@ bot.on("message:text", async (ctx) => {
     targetDate = setMinutes(targetDate, parseInt(minsStr));
 
     if (ctx.session.tempPost) {
-      const { error } = await supabase.from("scheduled_posts").insert({
+      await supabase.from("scheduled_posts").insert({
         media_urls: ctx.session.tempPost.media,
         custom_desc: ctx.session.tempPost.custom_desc ?? null,
         scheduled_at: targetDate.toISOString(),
         is_published: false,
       });
-      if (error)
-        return ctx.reply("🚨 Ошибка при создании поста: " + error.message);
     }
 
     ctx.session.step = "idle";
     await ctx.reply(
-      `🎉 Пост запланирован на ${targetDate.toLocaleString("ru-RU")}`,
+      `🎉 Запланировано на ${targetDate.toLocaleString("ru-RU")}`,
     );
   }
 });
 
-// Глобальный обработчик ошибок
-bot.catch((err) => {
-  console.error("Global bot error:", err.error);
-  err.ctx.reply("⚠️ Произошла ошибка. Попробуй использовать /start");
-});
+// --- 4. СЕРВЕР ДЛЯ RENDER (Keep-alive) ---
+const PORT = process.env.PORT || 3000;
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Bot is alive!");
+  })
+  .listen(PORT, () => {
+    console.log(`📡 Health-check server on port ${PORT}`);
+  });
 
-// Инициализация
+bot.catch((err) => console.error("Bot error:", err));
+
 initScheduler();
-bot.on("channel_post", (ctx) => {
-  console.log("----------------------------");
-  console.log("📢 СООБЩЕНИЕ ИЗ КАНАЛА ПОЙМАНО!");
-  console.log("Название канала:", ctx.chat.title);
-  console.log("ID для .env:", ctx.chat.id);
-  console.log("----------------------------");
-  ctx.reply("ID получен! Проверь консоль в VS Code.");
-});
 bot.start();
-console.log("🚀 Бот летит! (v.1.1 Update fixed)");
+console.log("🚀 Бот запущен!");
